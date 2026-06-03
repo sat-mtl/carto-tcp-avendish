@@ -69,6 +69,13 @@ target_link_libraries(CartoTCP_pop PRIVATE
   Boost::boost
 )
 
+# The TCP receiver uses the Winsock API (socket/bind/recv/WSAStartup/...), which
+# lives in ws2_32 on Windows. Without this the MODULE fails to link with
+# LNK2019 unresolved __imp_* externals.
+if(WIN32)
+  target_link_libraries(CartoTCP_pop PRIVATE ws2_32)
+endif()
+
 if(APPLE)
   set_target_properties(CartoTCP_pop PROPERTIES
     SUFFIX ".dylib"
