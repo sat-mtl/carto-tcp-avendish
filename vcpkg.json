@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "cartotcp",
+  "version": "0.1.0",
+  "description": "Avendish TouchDesigner POP that receives an XYZ point cloud over TCP (pointmapper protocol).",
+  "homepage": "https://github.com/sat-mtl/CartoTCP",
+  "dependencies": [
+    "boost-container",
+    "boost-core",
+    "boost-lexical-cast",
+    "boost-lockfree",
+    "boost-mp11",
+    "boost-pfr",
+    "boost-smart-ptr",
+    "boost-type-index",
+    "boost-variant2"
+  ]
+}
