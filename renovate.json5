@@ -1,0 +1,30 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+  ],
+
+  labels: ["dependencies"],
+
+  // avendish is fetched in CMakeLists.txt via
+  //   FetchContent_Declare(avendish
+  //     GIT_REPOSITORY "https://github.com/celtera/avendish"
+  //     GIT_TAG <commit>)
+  // Renovate's git-refs datasource tracks the branch HEAD and bumps the pinned
+  // commit whenever celtera/avendish's main branch moves. The same manager
+  // covers any other GIT_REPOSITORY + GIT_TAG <commit> pin added later.
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^CMakeLists\\.txt$/", "/\\.cmake$/"],
+      matchStrings: [
+        "GIT_REPOSITORY\\s+\"?https://github\\.com/(?<depName>[^\\s\"]+?)(?:\\.git)?\"?\\s+GIT_TAG\\s+(?<currentDigest>[0-9a-f]{7,40})",
+      ],
+      currentValueTemplate: "main",
+      datasourceTemplate: "git-refs",
+    },
+  ],
+}
