@@ -33,12 +33,20 @@ if(NOT Avendish_FOUND)
   find_package(Avendish REQUIRED)
 endif()
 
-# Extra link/include the object needs on top of Avendish (which already carries
-# Boost). The TCP receiver uses the Winsock API (socket/bind/recv/WSAStartup),
-# which lives in ws2_32 on Windows; without it the module fails to link with
-# LNK2019 unresolved __imp_* externals. Propagated to every back-end that links
-# the object (here: the TD POP) via avnd_addon_object's DEPENDENCIES.
+# What the object library and every back-end that links it need. Propagated via
+# avnd_addon_object's DEPENDENCIES (linked PUBLIC to the object lib).
+#  - Avendish::Avendish: the object's own translation unit includes <halp/*>, and
+#    the internally-created object STATIC lib does not otherwise inherit Avendish's
+#    include path (only the back-end targets do).
+#  - cxx_std_23: std::span / std::is_nothrow_*_v used by net/*.hpp are C++20/23; the
+#    object lib is built at the compiler default unless we require the standard here
+#    (libstdc++ is lax, but macOS libc++ / MSVC reject the older standard).
+#  - src include dir so "net/NetIO.hpp" resolves.
+#  - ws2_32 on Windows: the TCP receiver uses the Winsock API (socket/bind/recv/
+#    WSAStartup); without it the module fails to link (LNK2019 __imp_* externals).
 add_library(cartotcp_deps INTERFACE)
+target_link_libraries(cartotcp_deps INTERFACE Avendish::Avendish)
+target_compile_features(cartotcp_deps INTERFACE cxx_std_23)
 target_include_directories(cartotcp_deps INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(WIN32)
   target_link_libraries(cartotcp_deps INTERFACE ws2_32)
