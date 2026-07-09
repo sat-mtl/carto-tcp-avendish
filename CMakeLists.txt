@@ -59,6 +59,7 @@ avnd_addon_object(
   DEPENDENCIES cartotcp_deps
   MAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/CartoTCP.hpp"
   SOURCES
-    src/CartoTCP.hpp)
+    src/CartoTCP.hpp
+    src/CartoTCP.cpp)
 
 avnd_addon_finalize(NAME CartoTCPAddon UUID 8f2a3c1d-6b4e-4a9f-8c2d-1e5f7a9b0c3d VERSION 1)
