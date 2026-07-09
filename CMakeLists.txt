@@ -2,103 +2,72 @@ cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 
 project(CartoTCP LANGUAGES C CXX)
 
-# Directory holding the TouchDesigner POP headers. We vendor both
-# CPlusPlus_Common.h and POP_CPlusPlusBase.h here so the build does not depend
-# on a TOUCHDESIGNER_SDK_PATH that predates POPs — they are added via
-# target_include_directories below.
-set(TD_POP_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/td-headers"
-    CACHE PATH "Directory with CPlusPlus_Common.h and POP_CPlusPlusBase.h")
+# TouchDesigner externals link the static CRT (/MT) on Windows. Set it for the
+# whole addon before Avendish and the object library are created so every target
+# shares one runtime. (CMP0091 is NEW via cmake_minimum_required.)
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
-include(FetchContent)
+# Where Avendish's avnd_make_touchdesigner looks for the TD headers
+# (<PATH>/include/CPlusPlus_Common.h + POP_CPlusPlusBase.h). CI passes a full
+# CustomOperatorSamples checkout via -DTOUCHDESIGNER_SDK_PATH; for local builds
+# we default to the headers vendored under td-headers/ (which post-date POPs, so
+# the build does not depend on an SDK that predates them). Left unset only when
+# neither is available, in which case the POP back-end silently no-ops.
+if(NOT TOUCHDESIGNER_SDK_PATH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/td-headers/include/CPlusPlus_Common.h")
+  set(TOUCHDESIGNER_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/td-headers"
+      CACHE PATH "Directory with include/CPlusPlus_Common.h and include/POP_CPlusPlusBase.h")
+endif()
 
-FetchContent_Declare(
-  avendish
-  GIT_REPOSITORY "https://github.com/celtera/avendish"
-  GIT_TAG  11a6ae1b404b24bfec0e2841751eee3bc21cb60d
-  GIT_PROGRESS true
-)
-FetchContent_Populate(avendish)
-set(CMAKE_PREFIX_PATH "${avendish_SOURCE_DIR};${CMAKE_PREFIX_PATH}")
-# FetchContent exposes the checkout as ${avendish_SOURCE_DIR}; the rest of this
-# file refers to it as AVENDISH_PATH (the variable the old local-copy build used).
-set(AVENDISH_PATH "${avendish_SOURCE_DIR}")
-find_package(Avendish REQUIRED)
-find_package(Boost REQUIRED)
+# Use the Avendish the host already provides (e.g. ossia score); otherwise fetch it.
+find_package(Avendish QUIET)
+if(NOT Avendish_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    Avendish
+    GIT_REPOSITORY "https://github.com/celtera/avendish"
+    GIT_TAG 558744dcd18657163a1d6955ed9992188e00e8ad)
+  FetchContent_Populate(Avendish)
+  list(APPEND CMAKE_PREFIX_PATH "${avendish_SOURCE_DIR}")
+  find_package(Avendish REQUIRED)
+endif()
 
-# --- POP binding instantiation ----------------------------------------------
-# Generate the TD POP entry-point translation unit from Avendish's prototype.
-set(AVND_MAIN_FILE  "${CMAKE_CURRENT_SOURCE_DIR}/src/CartoTCP.hpp")
-set(AVND_MAIN_CLASS "sat::CartoTCP")
-set(AVND_C_NAME     "sat_cartotcp")
-set(AVND_OPTYPE     "")
-
-configure_file(
-  "${AVENDISH_PATH}/include/avnd/binding/touchdesigner/POP.prototype.cpp.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/CartoTCP_POP_touchdesigner.cpp"
-  @ONLY
-  NEWLINE_STYLE LF
-)
-
-# --- Plugin module ----------------------------------------------------------
-add_library(CartoTCP_pop MODULE
-  "${AVND_MAIN_FILE}"
-  "${CMAKE_CURRENT_BINARY_DIR}/CartoTCP_POP_touchdesigner.cpp"
-)
-
-set_target_properties(CartoTCP_pop PROPERTIES
-  PREFIX ""                       # no "lib" prefix; TD loads CartoTCP_pop.{dll,dylib}
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF
-  LIBRARY_OUTPUT_DIRECTORY td
-  RUNTIME_OUTPUT_DIRECTORY td
-)
-
-# Both the vendored TD POP headers and the Avendish headers, as SYSTEM includes.
-target_include_directories(CartoTCP_pop SYSTEM PRIVATE
-  "${TD_POP_HEADERS}"
-  "${AVENDISH_PATH}/include"
-)
-# Our own sources (so net/NetIO.hpp etc. resolve relative to src/).
-target_include_directories(CartoTCP_pop PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/src"
-)
-
-target_link_libraries(CartoTCP_pop PRIVATE
-  Avendish::Avendish
-  Boost::boost
-)
-
-# The TCP receiver uses the Winsock API (socket/bind/recv/WSAStartup/...), which
-# lives in ws2_32 on Windows. Without this the MODULE fails to link with
-# LNK2019 unresolved __imp_* externals.
+# What the object library and every back-end that links it need. Propagated via
+# avnd_addon_object's DEPENDENCIES (linked PUBLIC to the object lib).
+#  - Avendish::Avendish: the object's own translation unit includes <halp/*>, and
+#    the internally-created object STATIC lib does not otherwise inherit Avendish's
+#    include path (only the back-end targets do).
+#  - cxx_std_23: std::span / std::is_nothrow_*_v used by net/*.hpp are C++20/23; the
+#    object lib is built at the compiler default unless we require the standard here
+#    (libstdc++ is lax, but macOS libc++ / MSVC reject the older standard).
+#  - src include dir so "net/NetIO.hpp" resolves.
+#  - ws2_32 on Windows: the TCP receiver uses the Winsock API (socket/bind/recv/
+#    WSAStartup); without it the module fails to link (LNK2019 __imp_* externals).
+add_library(cartotcp_deps INTERFACE)
+target_link_libraries(cartotcp_deps INTERFACE Avendish::Avendish)
+target_compile_features(cartotcp_deps INTERFACE cxx_std_23)
+target_include_directories(cartotcp_deps INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(WIN32)
-  target_link_libraries(CartoTCP_pop PRIVATE ws2_32)
+  target_link_libraries(cartotcp_deps INTERFACE ws2_32)
 endif()
 
-if(APPLE)
-  set_target_properties(CartoTCP_pop PROPERTIES
-    SUFFIX ".dylib"
-    BUNDLE FALSE
-    MACOSX_BUNDLE FALSE
-  )
-elseif(WIN32)
-  set_target_properties(CartoTCP_pop PROPERTIES SUFFIX ".dll")
-endif()
+avnd_addon_init(NAME CartoTCPAddon)
 
-# The TouchDesigner SDK headers use __cdecl and the MSVC ABI: build with Clang
-# on Linux/macOS, or MSVC on Windows. GCC does not parse __cdecl on x86-64, and
-# MinGW is ABI-incompatible with TD. Refuse early with guidance (upstream's
-# avnd_make_touchdesigner does the same).
-if(MINGW OR CYGWIN OR MSYS OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-  message(FATAL_ERROR
-    "CartoTCP (TouchDesigner POP) requires Clang (Linux/macOS) or MSVC (Windows); "
-    "GCC/MinGW cannot parse the TD SDK headers. Reconfigure a clean build dir with:\n"
-    "  cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++")
-endif()
+# BACKENDS touchdesigner:POP: receive an XYZ point cloud over TCP and expose it
+# as a TouchDesigner POP point cloud. avnd_make_touchdesigner handles the POP
+# entry-point generation, the compiler requirements (Clang/MSVC) and packaging.
+# In a score build the back-end list is ignored (score introspects the object).
+avnd_addon_object(
+  BASE CartoTCPAddon
+  C_NAME sat_cartotcp
+  CLASS CartoTCP
+  NAMESPACE sat
+  BACKENDS touchdesigner:POP
+  DEPENDENCIES cartotcp_deps
+  MAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/CartoTCP.hpp"
+  SOURCES
+    src/CartoTCP.hpp
+    src/CartoTCP.cpp)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_compile_options(CartoTCP_pop PRIVATE -fvisibility=hidden)
-endif()
-
-message(STATUS "Configured TouchDesigner POP: CartoTCP_pop -> td/CartoTCP_pop")
+avnd_addon_finalize(NAME CartoTCPAddon UUID 8f2a3c1d-6b4e-4a9f-8c2d-1e5f7a9b0c3d VERSION 1)
