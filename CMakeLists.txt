@@ -20,6 +20,21 @@ if(NOT TOUCHDESIGNER_SDK_PATH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/td-headers
       CACHE PATH "Directory with include/CPlusPlus_Common.h and include/POP_CPlusPlusBase.h")
 endif()
 
+# Build against a local Avendish checkout, to develop the bindings and the object
+# together: otherwise FetchContent clones its own copy under build/_deps and edits
+# there are discarded on reconfigure.
+#   cmake -DAVENDISH_SOURCE_DIR=/path/to/avendish ...
+set(AVENDISH_SOURCE_DIR "" CACHE PATH "Local Avendish checkout to build against")
+if(AVENDISH_SOURCE_DIR)
+  if(NOT EXISTS "${AVENDISH_SOURCE_DIR}/AvendishConfig.cmake")
+    message(FATAL_ERROR
+      "AVENDISH_SOURCE_DIR='${AVENDISH_SOURCE_DIR}' has no AvendishConfig.cmake; "
+      "it should point at the root of an Avendish checkout.")
+  endif()
+  list(APPEND CMAKE_PREFIX_PATH "${AVENDISH_SOURCE_DIR}")
+  message(STATUS "CartoTCP: using local Avendish at ${AVENDISH_SOURCE_DIR}")
+endif()
+
 # Use the Avendish the host already provides (e.g. ossia score); otherwise fetch it.
 find_package(Avendish QUIET)
 if(NOT Avendish_FOUND)
@@ -27,7 +42,7 @@ if(NOT Avendish_FOUND)
   FetchContent_Declare(
     Avendish
     GIT_REPOSITORY "https://github.com/celtera/avendish"
-    GIT_TAG 558744dcd18657163a1d6955ed9992188e00e8ad)
+    GIT_TAG main)
   FetchContent_Populate(Avendish)
   list(APPEND CMAKE_PREFIX_PATH "${avendish_SOURCE_DIR}")
   find_package(Avendish REQUIRED)
@@ -52,6 +67,13 @@ if(WIN32)
   target_link_libraries(cartotcp_deps INTERFACE ws2_32)
 endif()
 
+# The addon build sets no /EH flag, but the object uses try/catch and owns its
+# sockets through RAII: without an exception model MSVC emits no unwind code, so
+# a throw out of receiver_thread() would skip ~Socket and leak the descriptor.
+if(MSVC)
+  target_compile_options(cartotcp_deps INTERFACE /EHsc)
+endif()
+
 avnd_addon_init(NAME CartoTCPAddon)
 
 # BACKENDS touchdesigner:POP: receive an XYZ point cloud over TCP and expose it
@@ -71,3 +93,16 @@ avnd_addon_object(
     src/CartoTCP.cpp)
 
 avnd_addon_finalize(NAME CartoTCPAddon UUID 8f2a3c1d-6b4e-4a9f-8c2d-1e5f7a9b0c3d VERSION 1)
+
+# Test sender: connects to the POP and streams a synthetic point cloud using the
+# same wire protocol, with optional fault injection (see tools/README.md). Off in
+# CI / when embedded in a host such as score; it is a debugging aid, not shipped.
+option(CARTOTCP_BUILD_TOOLS "Build the fake point-cloud sender used to test the POP" OFF)
+if(CARTOTCP_BUILD_TOOLS)
+  add_executable(fake_cloud_sender tools/fake_cloud_sender.cpp)
+  target_compile_features(fake_cloud_sender PRIVATE cxx_std_20)
+  target_include_directories(fake_cloud_sender PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  if(WIN32)
+    target_link_libraries(fake_cloud_sender PRIVATE ws2_32)
+  endif()
+endif()
