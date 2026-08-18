@@ -60,7 +60,9 @@ endif()
 #  - ws2_32 on Windows: the TCP receiver uses the Winsock API (socket/bind/recv/
 #    WSAStartup); without it the module fails to link (LNK2019 __imp_* externals).
 add_library(cartotcp_deps INTERFACE)
-target_link_libraries(cartotcp_deps INTERFACE Avendish::Avendish)
+if(TARGET Avendish::Avendish)
+  target_link_libraries(cartotcp_deps INTERFACE Avendish::Avendish)
+endif()
 target_compile_features(cartotcp_deps INTERFACE cxx_std_23)
 target_include_directories(cartotcp_deps INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(WIN32)
