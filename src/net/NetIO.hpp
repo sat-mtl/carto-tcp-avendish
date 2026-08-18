@@ -2,6 +2,11 @@
 
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <climits>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -9,10 +14,16 @@
 #include <system_error>
 // Platform-specific includes
 #if defined(_WIN32)
-#include <Windows.h>
+// Windows.h defines min/max as macros, which break the std::min calls below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+// winsock2.h must come before Windows.h: without WIN32_LEAN_AND_MEAN the latter
+// pulls in the legacy winsock.h, and the two redefine each other's types.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>  // tcp_keepalive, SIO_KEEPALIVE_VALS
+#include <Windows.h>
 
 using socket_t = SOCKET;
 constexpr socket_t INVALID_SOCKET_VALUE = INVALID_SOCKET;
@@ -65,8 +76,10 @@ inline void set_blocking(socket_t sock)
 #endif
 }
 
-// Unblock any threads blocked in recv()/send() on this socket.
-// Unlike close(), shutdown() is guaranteed to wake them up.
+// Half-close the connection (sends FIN).
+//
+// NOT a way to unblock a thread sitting in recv(): on Windows a blocked recv()
+// is not woken by shutdown() at all. Use recv_all_until() for interruptibility.
 inline void shutdown_socket(socket_t sock)
 {
   if(sock != INVALID_SOCKET_VALUE)
@@ -128,8 +141,7 @@ public:
 
   socket_t native_handle() const noexcept { return m_socket; }
 
-  // Unblock threads blocked in recv/send, but keep the fd valid
-  // so close() can still clean up after thread join.
+  // Half-close, keeping the fd valid so close() can still clean up.
   void shutdown()
   {
     if(is_valid())
@@ -210,6 +222,22 @@ inline void set_reuse_addr(socket_t sock, bool enable = true)
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&flag, sizeof(flag));
 }
 
+// Claim the port exclusively: bind() must fail if someone else already holds it.
+//
+// Not SO_REUSEADDR on Windows -- there it permits binding over a socket that is
+// already *listening*, not merely one in TIME_WAIT, so two listeners coexist and
+// the stack picks between them nondeterministically. SO_EXCLUSIVEADDRUSE is the
+// Windows spelling of the POSIX default.
+inline void set_exclusive_addr(socket_t sock)
+{
+  int flag = 1;
+#if defined(_WIN32)
+  setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&flag, sizeof(flag));
+#else
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&flag, sizeof(flag));
+#endif
+}
+
 // Aggressive TCP optimizations for high-performance, low-latency 10G networks
 inline void optimize_for_low_latency(socket_t sock)
 {
@@ -275,10 +303,6 @@ inline void optimize_for_low_latency(socket_t sock)
   // Increase buffer sizes for 10G networks
   setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&buffer_size, sizeof(buffer_size));
   setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char*)&buffer_size, sizeof(buffer_size));
-
-  // Disable send buffering for minimal latency
-  flag = 0;
-  setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&flag, sizeof(flag));
 
   // Enable keepalive
   flag = 1;
@@ -417,6 +441,124 @@ inline void refresh_quickack([[maybe_unused]] socket_t sock)
   int flag = 1;
   setsockopt(sock, IPPROTO_TCP, TCP_QUICKACK, &flag, sizeof(flag));
 #endif
+}
+
+inline bool would_block()
+{
+#if defined(_WIN32)
+  return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+inline bool was_interrupted()
+{
+#if defined(_WIN32)
+  return WSAGetLastError() == WSAEINTR;
+#else
+  return errno == EINTR;
+#endif
+}
+
+inline bool timed_out()
+{
+#if defined(_WIN32)
+  const int err = WSAGetLastError();
+  return err == WSAETIMEDOUT || err == WSAEWOULDBLOCK;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+// Make blocking recv() calls give up after `timeout_ms` rather than waiting
+// forever, so a receive loop can surface regularly to re-check a stop flag.
+inline bool set_recv_timeout(socket_t sock, int timeout_ms)
+{
+#if defined(_WIN32)
+  DWORD tv = static_cast<DWORD>(timeout_ms);
+#else
+  struct timeval tv = {};
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+#endif
+  return setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) == 0;
+}
+
+// Receive exactly buffer.size() bytes, abandoning the read as soon as
+// `keep_going` turns false or `time_limit` expires (zero = unbounded). `sock`
+// must be blocking with a receive timeout applied (set_recv_timeout).
+//
+// Interruptibility is the whole point: a thread parked in a plain recv() cannot
+// be woken portably -- on Windows shutdown() does not return one, only
+// closesocket() does, and closing a descriptor another thread is reading is a
+// race. Without the time limit, a peer that stops mid-frame pins this thread
+// forever while the kernel keeps ACKing, so the connection looks healthy from
+// the outside though no frame ever completes.
+//
+// select() is not an option in a plugin: POSIX fd_set is indexed by descriptor
+// *value*, so any fd >= FD_SETSIZE (1024) makes FD_SET write past the end of the
+// set, and a plugin does not control how many descriptors its host holds.
+// poll() would need WSAPoll() on Windows, i.e. two code paths.
+//
+// MSG_WAITALL is deliberately not combined with the timeout: on Windows a
+// MSG_WAITALL recv() that times out can consume bytes without reporting them,
+// silently desynchronising the framing.
+enum class recv_status
+{
+  complete,  // the buffer was filled
+  timed_out, // time_limit elapsed; `offset` says how much is buffered
+  failed     // peer closed, socket error, or keep_going cleared
+};
+
+// Resumable form: `offset` carries how much of `buffer` is already filled, so a
+// caller can time out, do something else, and resume without losing the bytes
+// it already took off the socket.
+inline recv_status recv_some_until(
+    socket_t sock, std::span<uint8_t> buffer, std::size_t& offset,
+    const std::atomic<bool>& keep_going,
+    std::chrono::milliseconds time_limit = std::chrono::milliseconds::zero())
+{
+  const auto started = std::chrono::steady_clock::now();
+  while(offset < buffer.size())
+  {
+    if(!keep_going.load(std::memory_order_acquire))
+      return recv_status::failed;
+
+    if(time_limit > std::chrono::milliseconds::zero()
+       && std::chrono::steady_clock::now() - started > time_limit)
+      return recv_status::timed_out;
+
+    const auto remaining = buffer.size() - offset;
+#if defined(_WIN32)
+    const int chunk = static_cast<int>(std::min(remaining, static_cast<size_t>(INT_MAX)));
+#else
+    const size_t chunk = remaining;
+#endif
+    const auto received
+        = recv(sock, reinterpret_cast<char*>(buffer.data() + offset), chunk, 0);
+
+    if(received > 0)
+    {
+      offset += static_cast<std::size_t>(received);
+      continue;
+    }
+    if(received == 0)
+      return recv_status::failed; // peer closed
+    if(timed_out() || was_interrupted())
+      continue;
+    return recv_status::failed;
+  }
+  return recv_status::complete;
+}
+
+inline bool recv_all_until(
+    socket_t sock, std::span<uint8_t> buffer, const std::atomic<bool>& keep_going,
+    std::chrono::milliseconds time_limit = std::chrono::milliseconds::zero())
+{
+  std::size_t offset = 0;
+  return recv_some_until(sock, buffer, offset, keep_going, time_limit)
+         == recv_status::complete;
 }
 
 // Receive data with blocking I/O

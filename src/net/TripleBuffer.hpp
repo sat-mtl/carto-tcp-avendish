@@ -2,8 +2,12 @@
 
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include <array>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace netstream
