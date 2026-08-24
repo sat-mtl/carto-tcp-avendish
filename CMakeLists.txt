@@ -5,8 +5,10 @@ project(CartoTCP LANGUAGES C CXX)
 # TouchDesigner externals link the static CRT (/MT) on Windows. Set it for the
 # whole addon before Avendish and the object library are created so every target
 # shares one runtime. (CMP0091 is NEW via cmake_minimum_required.)
-if(MSVC)
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+if(NOT TARGET score_plugin_avnd)
+  if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
 endif()
 
 # Where Avendish's avnd_make_touchdesigner looks for the TD headers
