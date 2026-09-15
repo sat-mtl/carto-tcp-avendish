@@ -1,0 +1,22 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Standalone TouchDesigner POP external. The reusable workflow checks out a
+  # POP-capable TD SDK, builds the addon and packages the td/ external (plus the
+  # generated help/example patches) into a per-OS zip. Other back-ends stay off:
+  # CartoTCP is a TouchDesigner-specific point-cloud receiver.
+  standalone:
+    uses: ossia/actions/.github/workflows/avnd-addon.yml@master
+    secrets: inherit
+    with:
+      touchdesigner: true
