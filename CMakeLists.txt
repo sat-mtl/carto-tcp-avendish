@@ -14,7 +14,7 @@ include(FetchContent)
 FetchContent_Declare(
   avendish
   GIT_REPOSITORY "https://github.com/celtera/avendish"
-  GIT_TAG  38f80755baf96ec6db0f5b428bf6b7b557f86658
+  GIT_TAG  76d0d2bf5f84cc07e1914c6260f2b19280d58838
   GIT_PROGRESS true
 )
 FetchContent_Populate(avendish)
