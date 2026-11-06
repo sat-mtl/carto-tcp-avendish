@@ -1,2 +1,4 @@
 .projectile
 build/*
+build-msvc/
+bin/
