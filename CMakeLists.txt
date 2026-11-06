@@ -22,6 +22,7 @@ if(NOT TOUCHDESIGNER_SDK_PATH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/td-headers
       CACHE PATH "Directory with include/CPlusPlus_Common.h and include/POP_CPlusPlusBase.h")
 endif()
 
+<<<<<<< HEAD
 # Build against a local Avendish checkout, to develop the bindings and the object
 # together: otherwise FetchContent clones its own copy under build/_deps and edits
 # there are discarded on reconfigure.
@@ -36,6 +37,21 @@ if(AVENDISH_SOURCE_DIR)
   list(APPEND CMAKE_PREFIX_PATH "${AVENDISH_SOURCE_DIR}")
   message(STATUS "CartoTCP: using local Avendish at ${AVENDISH_SOURCE_DIR}")
 endif()
+=======
+FetchContent_Declare(
+  avendish
+  GIT_REPOSITORY "https://github.com/celtera/avendish"
+  GIT_TAG  38f80755baf96ec6db0f5b428bf6b7b557f86658
+  GIT_PROGRESS true
+)
+FetchContent_Populate(avendish)
+set(CMAKE_PREFIX_PATH "${avendish_SOURCE_DIR};${CMAKE_PREFIX_PATH}")
+# FetchContent exposes the checkout as ${avendish_SOURCE_DIR}; the rest of this
+# file refers to it as AVENDISH_PATH (the variable the old local-copy build used).
+set(AVENDISH_PATH "${avendish_SOURCE_DIR}")
+find_package(Avendish REQUIRED)
+find_package(Boost REQUIRED)
+>>>>>>> main
 
 # Use the Avendish the host already provides (e.g. ossia score); otherwise fetch it.
 find_package(Avendish QUIET)
